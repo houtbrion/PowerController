@@ -1,0 +1,174 @@
+#!/usr/bin/perl
+
+#ピン配列の定義
+# 
+# 用途                           Raspberry Pi   Arduino
+# 【割り込み信号 Pi -> Arduino】
+# keep alive                         17            2
+# 高温信号                           27            3
+# 【Arduino -> Pi】
+# shutdown                           22           10
+# 【温度センサ】
+#  DHTデータピン                                   4
+# 【電源制御】
+#  リレーのコントール端子                          5
+#  パワーボタン                                    6
+#
+# Raspberry Piのファンの端子         18
+# Raspberry PiのLCDの端子           I2C
+
+#
+# 利用するモジュールのロード
+#
+use Switch;
+
+# 1秒未満のsleepを利用する(Time::HiResを使用する)
+use strict;
+use warnings;
+use Time::HiRes;
+
+#
+# 変数の定義
+#
+my $cputemp;
+my $cputempavg;
+my $fan_run;
+
+my $shutdownFlag;
+my $shutdownSigCounter=0;
+my $shutdownSig=0;
+my $outputCMD;
+my $count;
+#
+# 関数の定義
+#
+sub shutdown{
+	# LCDに高温警告を表示
+	# 高温信号端子をONにする
+	system("echo 1 > /sys/class/gpio/gpio27/value");
+	sleep(2);
+	# shutdownの実行
+	system("shutdown -h now");
+}
+sub calcFanLevel{
+	# CPU温度読み取り
+	open(CPUT, "/sys/class/thermal/thermal_zone0/temp");
+	$cputemp = <CPUT>/1000.0; #numbers
+	close(CPUT);
+	# CPU温度加重移動平均値計算
+	$cputempavg = $cputempavg*0.9 + $cputemp*0.1;
+	# fanの制御内容の判定
+	if($cputempavg > 45)
+	{
+		$fan_run = 1;
+	}
+	if($cputempavg < 35)
+	{
+		$fan_run = 0;
+	}
+	if($cputempavg > 65)
+	{
+		$fan_run = 2;
+	}
+}
+sub keepAliveOn{
+	# keep alive信号をON
+	system("echo 1 > /sys/class/gpio/gpio17/value");
+	sleep(1);
+}
+sub keepAliveOff{
+	# keep alive信号をOFF
+	system("echo 0 > /sys/class/gpio/gpio17/value");
+}
+sub readShutdownSig{
+	# shutdown信号読み取り
+	$shutdownFlag=0;
+	$shutdownSigCounter=0;
+	# shutdown信号を0.1秒間隔で読んで3回連続でHIGHだったらshutdown信号がONだったと判定する
+	for ($count = 0; $count < 10; $count++){
+		# ファイルのオープン
+		open(SHUTDOWN, "/sys/class/gpio/gpio22/value");
+		$shutdownSig=<SHUTDOWN>;
+		chomp($shutdownSig);
+		close(SHUTDOWN);
+		if ($shutdownSig=="0") {
+			last;
+		} else {
+			$shutdownSigCounter++;
+		}
+		Time::HiRes::sleep(0.1);
+	}
+	if ( $shutdownSigCounter >=3) {
+		$shutdownFlag=1;
+	}
+}
+sub fanOn{
+	system("echo 1 > /sys/class/gpio/gpio18/value");
+}
+sub fanOff{
+	system("echo 0 > /sys/class/gpio/gpio18/value");
+}
+sub printLCD{
+	$outputCMD="/usr/local/bin/groveLCD $_[0]";
+	#system("echo $outputCMD");
+	system("$outputCMD");
+}
+#
+# 初期化
+#
+open(CPUT, "/sys/class/thermal/thermal_zone0/temp");
+$cputemp = <CPUT>/1000.0; #numbers
+close(CPUT);
+$cputempavg = $cputemp;
+
+# ファン用端子の初期設定
+system("echo 18 > /sys/class/gpio/export");
+system("echo out > /sys/class/gpio/gpio18/direction");
+system("echo 1 > /sys/class/gpio/gpio18/value");
+$fan_run = 1;
+
+
+# keep alive信号用端子の初期設定
+system("echo 17 > /sys/class/gpio/export");
+system("echo out > /sys/class/gpio/gpio17/direction");
+system("echo 0 > /sys/class/gpio/gpio17/value");
+
+# 高温信号用端子の初期設定
+system("echo 27 > /sys/class/gpio/export");
+system("echo out > /sys/class/gpio/gpio27/direction");
+system("echo 0 > /sys/class/gpio/gpio27/value");
+
+# shutdown信号用端子の初期設定
+system("echo 22 > /sys/class/gpio/export");
+system("echo in > /sys/class/gpio/gpio22/direction");
+#open(SHUTDOWN, "/sys/class/gpio/gpio22/value");
+$shutdownFlag=0;
+
+#
+# メインルーブ
+#
+while(1)
+{
+	# shutdown信号読み取り
+	&readShutdownSig;
+	# shutdown信号があれば，shutdown実行
+	if ($shutdownFlag==1) {
+		&shutdown;
+	}
+	# keep alive信号をON
+	&keepAliveOn;
+	# fanの制御内容を判定 結果はfan_funに入る
+	&calcFanLevel;
+	switch ($fan_run) {
+		case 1 { &fanOn;}
+		case 0 { &fanOff;}
+		else   { &shutdown;}
+	}
+	# keep alive信号をOFF
+	&keepAliveOff;
+	sleep(1);
+}
+
+
+
+
