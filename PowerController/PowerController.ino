@@ -82,15 +82,32 @@
 #ifdef SOFT_SERIAL
 #include <SoftwareSerial.h>
 #define CONSOLE sSerial
-#endif
+#endif /* SOFT_SERIAL */
+
 #ifdef SERIAL
 #define CONSOLE Serial
-#endif
-#ifdef YUN
+#endif /* SERIAL */
+
+#ifdef SERIAL1
+#define CONSOLE Serial1
+#endif /* SERIAL1 */
+
+#ifdef SERIAL2
+#define CONSOLE Serial2
+#endif /* SERIAL2 */
+
+#ifdef SERIAL3
+#define CONSOLE Serial3
+#endif /* SERIAL3 */
+
+#ifdef BRIDGE
 #include <Console.h>
 #define CONSOLE Console
-#endif /* YUN */
+#endif /* BRIDGE */
 
+#ifdef SOFT_WDT
+#include <avr/wdt.h>
+#endif /* SOFT_WDT */
 /*
     各種変数型の定義とグローバル変数の定義&初期化
  */
@@ -102,8 +119,10 @@ volatile time_t keepAlive;                     // keep alive信号のタイマ�
 
 int currentState=-1;                           // システム(状態遷移機械)の状態を格納する変数
 volatile boolean highTemperature=false;        // 過去に高温信号が上がったか否か
+#ifndef NO_INTERRUPT
 volatile boolean highTemperatureEvent=false;   // 高温信号の有無の一時格納用 (イベント監視の関数は常時初期化されるため)
 volatile boolean keepAliveFlag=false;
+#endif /* NO_INTERRUPT */
 
 time_t infoTimer;
 
@@ -197,12 +216,11 @@ void dumpEvent(){
 #endif /* DEBUG */
 
 
-
+#ifndef NO_INTERRUPT
 /*
  * 割り込み処理の定義
  */
 void keepAliveINT(){          // keep alive信号の割り込み処理
-  //keepAlive=now();            // keep alive信号が上がった時間の格納
   keepAliveFlag=true;
 }
 
@@ -210,6 +228,7 @@ void highTemperatureINT() {   // CPU高温信号が割り込み処理
   highTemperature=true;       // CPU高温警告が過去に上がったか否か(冷却処理とコマンドラインでのINFOコマンドのため) 冷却時間が過ぎるまで消さない
   highTemperatureEvent=true;  // CPU高温警告が上がったか否かの一時格納
 }
+#endif /* NO_INTERRUPT */
 
 /*
  * 管理用インターフェースの文字入出力の仮想化
@@ -317,17 +336,29 @@ void checkEvent(){
   Serial.println(event.powerPinCounter);
 #endif /* DEBUG_POWER_PIN */
   // Raspberry Piのkeep alive信号が一定時間以内に観測できたか否かの判定
+#ifdef NO_INTERRUPT
+  if (HIGH==digitalRead(KEEP_ALIVE_PIN)) {
+    keepAlive=now();            // keep alive信号が上がった時間の格納
+  }
+#else /* NO_INTERRUPT */
   if (keepAliveFlag==true) {
     keepAlive=now();            // keep alive信号が上がった時間の格納
     keepAliveFlag=false;
   }
+#endif /* NO_INTERRUPT */
   if ((keepAlive+KEEP_ALIVE_THRESHOLD) < now()) { // 前回の観測時間に制限時間を加えたものが現在時刻より未来になっていない場合は，タイムアウト (エラー発生)
     event.keepAlive=true;
   } else {                                        // タイムアウトになっていない(制限時間内)の場合
     event.keepAlive=false;
   }
+#ifdef NO_INTERRUPT
+  if (HIGH==digitalRead(HIGH_TEMP_PIN)) {
+    event.highTemperature=true;
+  }
+#else /* NO_INTERRUPT */
   event.highTemperature=highTemperatureEvent;     // 割り込みで立てられたフラグの値を書き写す
   highTemperatureEvent=false;                     // 割り込みで立てられたフラグの値を消す
+#endif /* NO_INTERRUPT */
 
 #ifdef DHT_WAIT
   delay(dht.getMinimumSamplingPeriod());
@@ -1127,19 +1158,64 @@ int transition_control_normal(){
    初期処理
  */
 void setup() {
+  Serial.begin(9600);
+#ifdef SOFT_WDT
+  wdt_enable(WDTO_8S);
+#endif /* SOFT_WDT */
+#ifdef DEBUG
+  Serial.println("start");
+#endif
+#ifdef DEBUG
+  Serial.println("relay pin setup");
+#endif
   // Raspberry Piと接続するケーブルのデジタルI/Oのピンの動作定義
   pinMode(RELAY_PIN,     OUTPUT);
   relayControl(true);
+#ifdef DEBUG
+  Serial.println("done");
+#endif
   //digitalWrite(RELAY_PIN,LOW);
+#ifdef DEBUG
+  Serial.println("shutdown pin setup");
+#endif
   pinMode(SHUTDOWN_PIN,  OUTPUT);
   digitalWrite(SHUTDOWN_PIN,LOW);
+#ifdef DEBUG
+  Serial.println("done");
+#endif
+#ifdef DEBUG
+  Serial.println("keep alive pin setup");
+#endif
   pinMode(KEEP_ALIVE_PIN, INPUT);
+  //digitalWrite(KEEP_ALIVE_PIN,LOW);
+#ifdef DEBUG
+  Serial.println("done");
+#endif
+  //pinMode(HIGH_TEMP_PIN,  OUTPUT);
+  //digitalWrite(HIGH_TEMP_PIN,LOW);
   pinMode(HIGH_TEMP_PIN,  INPUT);
+#ifdef DEBUG
+  Serial.println("high temperature pin setup");
+#endif
+#ifdef DEBUG
+  Serial.println("done");
+#endif
+#ifdef DEBUG
+  Serial.println("power button pin setup");
+#endif
   pinMode(POWER_PIN,      INPUT);
-  Serial.begin(9600);
-#ifdef SOFT_SERIAL
+  //digitalWrite(POWER_PIN,LOW);
+#ifdef DEBUG
+  Serial.println("done");
+#endif
+
+#if defined(SOFT_SERIAL) || defined(SERIAL1) || defined(SERIAL2) || defined(SERIAL3)
   CONSOLE.begin(9600);
-#endif /* SOFT_SERIAL */
+#endif /* SOFT_SERIAL || SERIAL1 || SERIAL2 || SERIAL3 */
+#ifdef BRIDGE
+  Bridge.begin();
+  Console.begin();
+#endif /* BRIDGE */
 #ifdef LCD
   lcd.begin(16, 2);
 #endif /* LCD */
@@ -1160,8 +1236,11 @@ void setup() {
   dht.setup(DHT_PIN);                    // 温度・湿度センサの動作開始
   //printLog("attach interupt to pins\n");
   CONSOLE.println("attach interupt to pins.");
+#ifndef NO_INTERRUPT
   attachInterrupt(digitalPinToInterrupt(KEEP_ALIVE_PIN), keepAliveINT, RISING);               // Raspberry Piのkeep alive信号を監視するピンに割り込みを割当
   attachInterrupt(digitalPinToInterrupt(HIGH_TEMP_PIN), highTemperatureINT, RISING);          // Raspberry PiのCPU温度警告(高温)を監視するピンに割り込みを割当
+#endif /* NO_INTERRUPT */
+  //digitalWrite(HIGH_TEMP_PIN,LOW);
   //printLog("done.\n");
   CONSOLE.println("done.");
   currentState=STATE_NORMAL;             // システムの動作開始時は通常運用状態
@@ -1207,4 +1286,7 @@ void loop() {
       currentState=transition_control_off();
   }
   delay(LOOP_WAIT_TIME); // 次のイベントチェックまでの待ち時間
+#ifdef SOFT_WDT
+  wdt_reset();
+#endif /* SOFT_WDT */
 }
