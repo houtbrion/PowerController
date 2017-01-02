@@ -2,7 +2,7 @@
 #define DEBUG
 #define CONSOLE_MESSAGE
 #define ESP
-
+//#define SOFT_SERIAL
 
 #define TIMER_THRESHOLD 60
 #define MAX_PASS_RETRY 3
@@ -19,6 +19,10 @@
 #define LOGIN_PASSWD_FILE "pass.txt"
 #define WIFI_SSID_FILE "ssid.txt"
 #define WIFI_PASS_FILE "wifipass.txt"
+
+#define SOFT_SERIAL_RX_PIN 16
+#define SOFT_SERIAL_TX_PIN 4
+
 /*
   状態遷移
     初期状態    STATE_START          0
@@ -52,6 +56,11 @@
 #include <SPI.h>
 #include <SD.h>
 #include <ESP8266WiFi.h>
+
+#ifdef SOFT_SERIAL
+#include <EspSoftwareSerial.h>
+EspSoftwareSerial swSer(SOFT_SERIAL_RX_PIN,SOFT_SERIAL_TX_PIN, false, 256);  // Rx ,Tx, inverse_logic, buffSize
+#endif /* SOFT_SERIAL */
 
 char wifi_ssid[MAX_WIFI_SSID_SIZE];
 char wifi_pass[MAX_WIFI_PASS_SIZE];
@@ -416,11 +425,28 @@ int stateRelay(){
             promptCommand();
             return STATE_COMMAND;
           default:
+#ifdef SOFT_SERIAL
+            swSer.write(incomingByte);
+#else /* SOFT_SERIAL */
             Serial.write(incomingByte);
+#endif /* SOFT_SERIAL */
         }
       }
     }
   }
+#ifdef SOFT_SERIAL
+  //check UART for data
+  if(swSer.available()){
+    size_t len = swSer.available();
+    uint8_t sbuf[len];
+    swSer.readBytes(sbuf, len);
+    //push UART data to all connected telnet clients
+    if (serverClient && serverClient.connected()) {
+      serverClient.write(sbuf, len);
+      delay(1);
+    }
+  }
+#else /* SOFT_SERIAL */
   //check UART for data
   if(Serial.available()){
     size_t len = Serial.available();
@@ -432,6 +458,7 @@ int stateRelay(){
       delay(1);
     }
   }
+#endif /* SOFT_SERIAL */
   return STATE_RELAY;
 }
 
